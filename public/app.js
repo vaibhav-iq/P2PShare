@@ -6,17 +6,60 @@ const CHUNK_SIZE = 16 * 1024;
 const POLL_INTERVAL_MS = 900;
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
-const senderFileInput = document.getElementById("sender-file");
+/* ---------------------------------------------------------------------------
+ * Element references
+ * ------------------------------------------------------------------------- */
+const senderFileInput = document.getElementById("file-input");
 const generatePinBtn = document.getElementById("generate-pin-btn");
-const senderPinDisplay = document.getElementById("sender-pin");
 const senderStatusEl = document.getElementById("sender-status");
 
-const receiverPinInput = document.getElementById("receiver-pin-input");
 const connectPinBtn = document.getElementById("connect-pin-btn");
 const receiverStatusEl = document.getElementById("receiver-status");
-const downloadProgress = document.getElementById("download-progress");
-const downloadPercent = document.getElementById("download-percent");
 
+// UI shell
+const themeToggle = document.getElementById("theme-toggle");
+const connStatusEl = document.getElementById("conn-status");
+const connTextEl = connStatusEl.querySelector(".conn-text");
+const tabsEl = document.querySelector(".tabs");
+const tabSend = document.getElementById("tab-send");
+const tabReceive = document.getElementById("tab-receive");
+const panelSend = document.getElementById("panel-send");
+const panelReceive = document.getElementById("panel-receive");
+
+// Send UI
+const dropZone = document.getElementById("drop-zone");
+const fileChip = document.getElementById("file-chip");
+const fileNameEl = document.getElementById("file-name");
+const fileSizeEl = document.getElementById("file-size");
+const fileRemoveBtn = document.getElementById("file-remove");
+const shareSection = document.getElementById("share-section");
+const pinDisplay = document.getElementById("pin-display");
+const copyPinBtn = document.getElementById("copy-pin-btn");
+const qrCodeEl = document.getElementById("qr-code");
+const shareLinkInput = document.getElementById("share-link-input");
+const copyLinkBtn = document.getElementById("copy-link-btn");
+const webShareBtn = document.getElementById("web-share-btn");
+const sendProgressWrap = document.getElementById("send-progress-wrap");
+const sendFileLabel = document.getElementById("send-file-label");
+const sendPercentEl = document.getElementById("send-percent");
+const sendBar = document.getElementById("send-bar");
+
+// Receive UI
+const pinBoxes = Array.from(document.querySelectorAll(".pin-box"));
+const recvProgressWrap = document.getElementById("recv-progress-wrap");
+const recvFileLabel = document.getElementById("recv-file-label");
+const downloadPercent = document.getElementById("download-percent");
+const downloadBar = document.getElementById("download-bar");
+const recvFileResult = document.getElementById("recv-file-result");
+const recvFileNameEl = document.getElementById("recv-file-name");
+const recvFileSizeEl = document.getElementById("recv-file-size");
+const recvDownloadLink = document.getElementById("recv-download-link");
+
+const toastContainer = document.getElementById("toast-container");
+
+/* ---------------------------------------------------------------------------
+ * Transfer state (engine — unchanged behaviour)
+ * ------------------------------------------------------------------------- */
 const senderState = {
   pin: "",
   peerId: "",
@@ -43,25 +86,339 @@ const receiverState = {
   receivedSize: 0,
 };
 
-if (!isHttpsAllowed()) {
-  setStatus(senderStatusEl, "Open this page over HTTPS to use P2P transfer.", true);
-  setStatus(receiverStatusEl, "Open this page over HTTPS to use P2P transfer.", true);
+/* ===========================================================================
+ * UI: theme, tabs, toasts, helpers
+ * ========================================================================= */
+function systemPrefersDark() {
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
+
+function effectiveTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr === "light" || attr === "dark") {
+    return attr;
+  }
+  return systemPrefersDark() ? "dark" : "light";
+}
+
+function applyTheme(theme) {
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.setAttribute("data-theme", theme);
+  } else {
+    document.documentElement.removeAttribute("data-theme");
+  }
+}
+
+themeToggle.addEventListener("click", () => {
+  const next = effectiveTheme() === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try {
+    localStorage.setItem("p2p-theme", next);
+  } catch (e) {}
+});
+
+function switchTab(which) {
+  const isSend = which === "send";
+  tabsEl.dataset.active = which;
+  tabSend.classList.toggle("is-active", isSend);
+  tabReceive.classList.toggle("is-active", !isSend);
+  tabSend.setAttribute("aria-selected", String(isSend));
+  tabReceive.setAttribute("aria-selected", String(!isSend));
+  panelSend.hidden = !isSend;
+  panelReceive.hidden = isSend;
+}
+
+tabSend.addEventListener("click", () => switchTab("send"));
+tabReceive.addEventListener("click", () => switchTab("receive"));
+tabsEl.dataset.active = "send";
+
+if (window.location.hash === "#receive") {
+  switchTab("receive");
+}
+
+function setConnStatus(state, text) {
+  connStatusEl.dataset.state = state;
+  connTextEl.textContent = text;
+}
+
+const TOAST_ICONS = {
+  success: '<path d="M20 6 9 17l-5-5"/>',
+  error: '<path d="M18 6 6 18M6 6l12 12"/>',
+  info: '<path d="M12 16v-5"/><path d="M12 8h.01"/><circle cx="12" cy="12" r="9"/>',
+};
+
+function showToast(message, type = "info", duration = 2800) {
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.setAttribute("role", type === "error" ? "alert" : "status");
+  toast.innerHTML =
+    `<span class="toast-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" ` +
+    `stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` +
+    `${TOAST_ICONS[type] || TOAST_ICONS.info}</svg></span>` +
+    `<span class="toast-msg"></span>`;
+  toast.querySelector(".toast-msg").textContent = message;
+  toastContainer.appendChild(toast);
+
+  const remove = () => {
+    toast.classList.add("leaving");
+    toast.addEventListener("animationend", () => toast.remove(), { once: true });
+    setTimeout(() => toast.remove(), 400);
+  };
+  setTimeout(remove, duration);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) {
+    return "";
+  }
+  if (n < 1024) {
+    return `${n} B`;
+  }
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = n / 1024;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) {
+    value /= 1024;
+    i++;
+  }
+  return `${value.toFixed(value >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/* ===========================================================================
+ * Send UI wiring
+ * ========================================================================= */
+function setSelectedFile(file) {
+  if (!file) {
+    return;
+  }
+  try {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    senderFileInput.files = dt.files;
+  } catch (e) {
+    // Older browsers may not allow programmatic FileList assignment; state still holds it.
+  }
+  senderState.file = file;
+
+  fileNameEl.textContent = file.name;
+  fileSizeEl.textContent = formatBytes(file.size);
+  fileChip.hidden = false;
+  generatePinBtn.disabled = false;
+  setStatus(senderStatusEl, `Ready to share "${file.name}".`);
+}
+
+function clearSelectedFile() {
+  senderState.file = null;
+  try {
+    senderFileInput.value = "";
+  } catch (e) {}
+  fileChip.hidden = true;
+  generatePinBtn.disabled = true;
+  shareSection.hidden = true;
+  sendProgressWrap.hidden = true;
+  setStatus(senderStatusEl, "Select a file to begin.");
+}
+
+senderFileInput.addEventListener("change", () => {
+  const file = senderFileInput.files[0] || null;
+  if (file) {
+    setSelectedFile(file);
+  }
+  void maybeSendFile();
+});
+
+fileRemoveBtn.addEventListener("click", () => {
+  clearSelectedFile();
+});
+
+// Drag & drop
+["dragenter", "dragover"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    dropZone.classList.add("is-dragging");
+  });
+});
+["dragleave", "dragend"].forEach((evt) => {
+  dropZone.addEventListener(evt, (e) => {
+    if (e.target === dropZone) {
+      dropZone.classList.remove("is-dragging");
+    }
+  });
+});
+dropZone.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropZone.classList.remove("is-dragging");
+  const file = e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files[0] : null;
+  if (file) {
+    setSelectedFile(file);
+  }
+});
+dropZone.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    senderFileInput.click();
+  }
+});
 
 generatePinBtn.addEventListener("click", () => {
   void startSenderSession();
 });
 
-senderFileInput.addEventListener("change", () => {
-  senderState.file = senderFileInput.files[0] || null;
-  if (senderState.file) {
-    setStatus(senderStatusEl, `Selected file: ${senderState.file.name}`);
+function renderPinDisplay(pin) {
+  pinDisplay.innerHTML = "";
+  for (const ch of String(pin)) {
+    const span = document.createElement("span");
+    span.className = "pin-digit";
+    span.textContent = ch;
+    pinDisplay.appendChild(span);
   }
-  void maybeSendFile();
+}
+
+function buildShareLink(pin) {
+  return `${window.location.origin}${window.location.pathname}?pin=${pin}`;
+}
+
+function renderQr(text) {
+  if (typeof qrcode !== "function") {
+    qrCodeEl.parentElement.hidden = true;
+    return;
+  }
+  try {
+    const qr = qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    qrCodeEl.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true });
+  } catch (e) {
+    qrCodeEl.parentElement.hidden = true;
+  }
+}
+
+function showShare(pin) {
+  const link = buildShareLink(pin);
+  renderPinDisplay(pin);
+  shareLinkInput.value = link;
+  renderQr(link);
+  webShareBtn.hidden = typeof navigator.share !== "function";
+  shareSection.hidden = false;
+}
+
+copyPinBtn.addEventListener("click", async () => {
+  if (senderState.pin && (await copyText(senderState.pin))) {
+    showToast("PIN copied to clipboard", "success");
+  }
+});
+copyLinkBtn.addEventListener("click", async () => {
+  if (shareLinkInput.value && (await copyText(shareLinkInput.value))) {
+    showToast("Share link copied", "success");
+  }
+});
+webShareBtn.addEventListener("click", () => {
+  if (typeof navigator.share !== "function") {
+    return;
+  }
+  navigator
+    .share({
+      title: "P2P Share",
+      text: `Join my file transfer — PIN ${senderState.pin}`,
+      url: shareLinkInput.value,
+    })
+    .catch(() => {});
 });
 
-receiverPinInput.addEventListener("input", () => {
-  receiverPinInput.value = receiverPinInput.value.replace(/\D/g, "").slice(0, 6);
+function updateSenderProgress(percent) {
+  const safe = Math.min(100, Math.max(0, Number(percent) || 0));
+  sendBar.style.width = `${safe}%`;
+  sendPercentEl.textContent = `${safe}%`;
+}
+
+/* ===========================================================================
+ * Receive UI wiring (segmented PIN input)
+ * ========================================================================= */
+function getEnteredPin() {
+  return pinBoxes.map((b) => b.value).join("");
+}
+
+function fillPinBoxes(pin) {
+  const digits = String(pin).replace(/\D/g, "").slice(0, 6).split("");
+  pinBoxes.forEach((box, i) => {
+    box.value = digits[i] || "";
+    box.classList.toggle("filled", Boolean(digits[i]));
+  });
+  updateConnectEnabled();
+}
+
+function clearPinBoxes() {
+  pinBoxes.forEach((box) => {
+    box.value = "";
+    box.classList.remove("filled");
+  });
+  updateConnectEnabled();
+}
+
+function updateConnectEnabled() {
+  connectPinBtn.disabled = !isValidPin(getEnteredPin());
+}
+
+pinBoxes.forEach((box, index) => {
+  box.addEventListener("input", () => {
+    box.value = box.value.replace(/\D/g, "").slice(0, 1);
+    box.classList.toggle("filled", box.value !== "");
+    if (box.value && index < pinBoxes.length - 1) {
+      pinBoxes[index + 1].focus();
+    }
+    updateConnectEnabled();
+    if (isValidPin(getEnteredPin())) {
+      box.blur();
+    }
+  });
+
+  box.addEventListener("keydown", (e) => {
+    if (e.key === "Backspace" && !box.value && index > 0) {
+      const prev = pinBoxes[index - 1];
+      prev.focus();
+      prev.value = "";
+      prev.classList.remove("filled");
+      updateConnectEnabled();
+    } else if (e.key === "ArrowLeft" && index > 0) {
+      pinBoxes[index - 1].focus();
+    } else if (e.key === "ArrowRight" && index < pinBoxes.length - 1) {
+      pinBoxes[index + 1].focus();
+    } else if (e.key === "Enter" && isValidPin(getEnteredPin())) {
+      void startReceiverSession();
+    }
+  });
+
+  box.addEventListener("paste", (e) => {
+    e.preventDefault();
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    fillPinBoxes(text);
+    const next = Math.min(text.replace(/\D/g, "").length, pinBoxes.length - 1);
+    pinBoxes[next].focus();
+  });
+
+  box.addEventListener("focus", () => box.select());
 });
 
 connectPinBtn.addEventListener("click", () => {
@@ -73,21 +430,47 @@ window.addEventListener("beforeunload", () => {
   sendLeaveBeacon(receiverState);
 });
 
+/* ===========================================================================
+ * HTTPS gate + deep-link prefill
+ * ========================================================================= */
+if (!isHttpsAllowed()) {
+  setStatus(senderStatusEl, "Open this page over HTTPS to use P2P transfer.", true);
+  setStatus(receiverStatusEl, "Open this page over HTTPS to use P2P transfer.", true);
+} else {
+  const params = new URLSearchParams(window.location.search);
+  const prefill = params.get("pin");
+  if (isValidPin(prefill)) {
+    switchTab("receive");
+    fillPinBoxes(prefill);
+    setStatus(receiverStatusEl, "PIN detected from link. Connecting...");
+    setTimeout(() => {
+      if (isValidPin(getEnteredPin()) && !receiverState.pin) {
+        void startReceiverSession();
+      }
+    }, 450);
+  }
+}
+
+/* ===========================================================================
+ * Signaling + WebRTC engine (behaviour preserved)
+ * ========================================================================= */
 async function startSenderSession() {
-  senderState.file = senderFileInput.files[0] || null;
+  senderState.file = senderFileInput.files[0] || senderState.file;
   await cleanupSenderConnection();
 
-  senderPinDisplay.textContent = "------";
+  setConnStatus("connecting", "Creating room");
   setStatus(senderStatusEl, "Creating secure room...");
 
   if (!isHttpsAllowed()) {
     setStatus(senderStatusEl, "Use HTTPS (or localhost) before generating PIN.", true);
+    setConnStatus("error", "HTTPS required");
     return;
   }
 
   const response = await apiRequest({ action: "create-room" });
   if (!response.ok) {
     setStatus(senderStatusEl, response.error, true);
+    setConnStatus("error", "Failed");
     return;
   }
 
@@ -95,20 +478,23 @@ async function startSenderSession() {
   const peerId = response.data?.peerId;
   if (!isValidPin(pin) || !isValidPeerId(peerId)) {
     setStatus(senderStatusEl, "Invalid create-room response.", true);
+    setConnStatus("error", "Failed");
     return;
   }
 
   senderState.pin = pin;
   senderState.peerId = peerId;
-  senderPinDisplay.textContent = pin;
+  showShare(pin);
 
   setupSenderPeerConnection();
   startSenderPolling();
-  setStatus(senderStatusEl, "Room created. Waiting for receiver...");
+  setConnStatus("connecting", "Waiting for peer");
+  setStatus(senderStatusEl, "Room created. Share the PIN and wait for the receiver...");
+  showToast("Room created — share your PIN", "info");
 }
 
 async function startReceiverSession() {
-  const pin = receiverPinInput.value.trim();
+  const pin = getEnteredPin().trim();
   if (!isValidPin(pin)) {
     setStatus(receiverStatusEl, "Enter a valid 6-digit numeric PIN.", true);
     return;
@@ -116,22 +502,28 @@ async function startReceiverSession() {
 
   await cleanupReceiverConnection();
   resetReceiverDownloadState();
+  recvFileResult.hidden = true;
+  setConnStatus("connecting", "Joining room");
   setStatus(receiverStatusEl, "Joining secure room...");
 
   if (!isHttpsAllowed()) {
     setStatus(receiverStatusEl, "Use HTTPS (or localhost) before connecting.", true);
+    setConnStatus("error", "HTTPS required");
     return;
   }
 
   const response = await apiRequest({ action: "join-room", pin });
   if (!response.ok) {
     setStatus(receiverStatusEl, response.error, true);
+    setConnStatus("error", "Failed");
+    showToast(response.error, "error");
     return;
   }
 
   const peerId = response.data?.peerId;
   if (!isValidPeerId(peerId)) {
     setStatus(receiverStatusEl, "Invalid join-room response.", true);
+    setConnStatus("error", "Failed");
     return;
   }
 
@@ -140,6 +532,7 @@ async function startReceiverSession() {
 
   setupReceiverPeerConnection();
   startReceiverPolling();
+  setConnStatus("connecting", "Connecting");
   setStatus(receiverStatusEl, "Joined room. Waiting for sender offer...");
 }
 
@@ -161,8 +554,10 @@ function setupSenderPeerConnection() {
 
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === "connected") {
+      setConnStatus("connected", "Connected");
       setStatus(senderStatusEl, "Peer connection established.");
     } else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+      setConnStatus("error", "Disconnected");
       setStatus(senderStatusEl, `Connection state: ${pc.connectionState}`, true);
     }
   };
@@ -201,8 +596,10 @@ function setupReceiverPeerConnection() {
 
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === "connected") {
+      setConnStatus("connected", "Connected");
       setStatus(receiverStatusEl, "Peer connection established.");
     } else if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
+      setConnStatus("error", "Disconnected");
       setStatus(receiverStatusEl, `Connection state: ${pc.connectionState}`, true);
     }
   };
@@ -250,6 +647,7 @@ function startSenderPolling() {
       if (isRoomMissingError(response.error)) {
         senderState.receiverConnected = false;
         setStatus(senderStatusEl, "Room closed or expired.", true);
+        setConnStatus("error", "Room closed");
         stopSenderPolling();
         return;
       }
@@ -294,6 +692,7 @@ function startReceiverPolling() {
     if (!response.ok) {
       if (isRoomMissingError(response.error)) {
         setStatus(receiverStatusEl, "Sender disconnected.", true);
+        setConnStatus("error", "Disconnected");
         stopReceiverPolling();
         return;
       }
@@ -323,6 +722,7 @@ async function handleSenderSignal(message) {
 
   if (message.type === "receiver-connected") {
     senderState.receiverConnected = true;
+    setConnStatus("connecting", "Negotiating");
     setStatus(senderStatusEl, "Receiver connected. Negotiating secure channel...");
     await createAndSendOffer();
     return;
@@ -346,6 +746,7 @@ async function handleSenderSignal(message) {
 
   if (message.type === "peer-disconnected") {
     senderState.receiverConnected = false;
+    setConnStatus("error", "Peer left");
     setStatus(senderStatusEl, "Receiver disconnected.", true);
   }
 }
@@ -369,6 +770,7 @@ async function handleReceiverSignal(message) {
   }
 
   if (message.type === "peer-disconnected") {
+    setConnStatus("error", "Peer left");
     setStatus(receiverStatusEl, "Sender disconnected.", true);
     stopReceiverPolling();
   }
@@ -485,6 +887,9 @@ async function sendFileInChunks(file) {
   }
 
   senderState.transferring = true;
+  sendFileLabel.textContent = file.name;
+  sendProgressWrap.hidden = false;
+  updateSenderProgress(0);
   setStatus(senderStatusEl, "Preparing file...");
 
   try {
@@ -498,7 +903,9 @@ async function sendFileInChunks(file) {
     );
 
     if (file.size === 0) {
+      updateSenderProgress(100);
       setStatus(senderStatusEl, "Empty file sent.", false, true);
+      showToast("File sent", "success");
       senderState.transferring = false;
       return;
     }
@@ -516,15 +923,21 @@ async function sendFileInChunks(file) {
       offset = end;
 
       const percent = Math.floor((offset / buffer.byteLength) * 100);
-      if (percent !== lastPercent && (percent % 5 === 0 || percent === 100)) {
+      if (percent !== lastPercent) {
         lastPercent = percent;
-        setStatus(senderStatusEl, `Sending file... ${percent}%`);
+        updateSenderProgress(percent);
+        if (percent % 5 === 0 || percent === 100) {
+          setStatus(senderStatusEl, `Sending file... ${percent}%`);
+        }
       }
     }
 
+    updateSenderProgress(100);
     setStatus(senderStatusEl, "File sent successfully.", false, true);
+    showToast("File sent successfully", "success");
   } catch (err) {
     setStatus(senderStatusEl, `Failed to send file: ${String(err)}`, true);
+    showToast("Transfer failed", "error");
   } finally {
     senderState.transferring = false;
   }
@@ -544,8 +957,11 @@ function handleIncomingData(data) {
       receiverState.incomingMeta = { name, size };
       receiverState.chunks = [];
       receiverState.receivedSize = 0;
+      recvFileResult.hidden = true;
+      recvFileLabel.textContent = name;
+      recvProgressWrap.hidden = false;
       updateReceiverProgress(0);
-      setStatus(receiverStatusEl, `Receiving "${name}"...`);
+      setStatus(receiverStatusEl, `Receiving "${name}" (${formatBytes(size)})...`);
 
       if (size === 0) {
         completeDownload();
@@ -607,9 +1023,16 @@ function completeDownload() {
   anchor.click();
   anchor.remove();
 
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // Offer a manual "save again" control (object URL kept alive while result is shown).
+  recvFileNameEl.textContent = meta.name;
+  recvFileSizeEl.textContent = formatBytes(meta.size);
+  recvDownloadLink.href = url;
+  recvDownloadLink.download = meta.name;
+  recvFileResult.hidden = false;
+
   updateReceiverProgress(100);
   setStatus(receiverStatusEl, `Download complete: ${meta.name}`, false, true);
+  showToast(`Received "${meta.name}"`, "success");
 
   receiverState.incomingMeta = null;
   receiverState.chunks = [];
@@ -721,7 +1144,7 @@ function resetReceiverDownloadState() {
 
 function updateReceiverProgress(percent) {
   const safe = Math.min(100, Math.max(0, Number(percent) || 0));
-  downloadProgress.value = safe;
+  downloadBar.style.width = `${safe}%`;
   downloadPercent.textContent = `${safe}%`;
 }
 

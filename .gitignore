@@ -1,0 +1,9 @@
+# Runtime signaling state (auto-created)
+server/storage/
+server/vendor/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

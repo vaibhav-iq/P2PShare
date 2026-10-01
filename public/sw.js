@@ -1,9 +1,10 @@
-const CACHE_NAME = "p2p-share-v1";
+const CACHE_NAME = "p2p-share-v2";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./vendor/qrcode.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

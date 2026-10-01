@@ -5,8 +5,23 @@
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f3f7ff",
+  "background_color": "#070b14",
   "theme_color": "#2162ff",
+  "categories": ["utilities", "productivity"],
+  "shortcuts": [
+    {
+      "name": "Send a file",
+      "short_name": "Send",
+      "url": "./index.html",
+      "description": "Open P2P Share ready to send a file"
+    },
+    {
+      "name": "Receive a file",
+      "short_name": "Receive",
+      "url": "./index.html#receive",
+      "description": "Open P2P Share ready to receive a file"
+    }
+  ],
   "icons": [
     {
       "src": "icons/icon-192.png",
