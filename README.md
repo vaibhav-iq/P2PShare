@@ -533,8 +533,3 @@ picks up new assets.
 - `server/signaling-server.php` is a legacy WebSocket signaling server and is **not** required by
   the current HTTPS polling mode.
 - No external runtime dependencies; the only vendored file is the MIT QR generator.
-
-## Credits
-
-- QR generation: [`qrcode-generator`](https://github.com/kazuhikoarase/qrcode-generator) by
-  Kazuhiko Arase (MIT).
